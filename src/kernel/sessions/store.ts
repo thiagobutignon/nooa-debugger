@@ -11,7 +11,8 @@ type CreateSessionInput = Pick<
   current_investigation_id?: string;
   root_pid?: number;
   target_pid?: number;
-  transport_hint?: { ws_url?: string; port?: number };
+  transport_hint?: { ws_url?: string; port?: number; waiting_for_debugger?: boolean };
+  paused_snapshot?: SessionRecord["paused_snapshot"];
 };
 
 export function createSessionStore(root: string) {
@@ -39,6 +40,7 @@ export function createSessionStore(root: string) {
         target_pid: input.target_pid,
         transport_hint: input.transport_hint,
         breakpoints: [],
+        paused_snapshot: input.paused_snapshot,
         current_investigation_id: input.current_investigation_id,
         created_at: now,
         updated_at: now,

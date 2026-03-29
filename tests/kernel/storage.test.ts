@@ -16,24 +16,23 @@ test("writeJsonAtomically writes readable JSON", async () => {
 
 test("withFileLock serializes access for same path", async () => {
   const path = `/tmp/nooa-debugger-lock-${Date.now()}.lock`;
-  const events: string[] = [];
+  const activeHolders: string[] = [];
+  let maxConcurrentHolders = 0;
 
   await Promise.all([
     withFileLock(path, async () => {
-      events.push("first:start");
+      activeHolders.push("first");
+      maxConcurrentHolders = Math.max(maxConcurrentHolders, activeHolders.length);
       await Bun.sleep(50);
-      events.push("first:end");
+      activeHolders.pop();
     }),
     withFileLock(path, async () => {
-      events.push("second:start");
-      events.push("second:end");
+      activeHolders.push("second");
+      maxConcurrentHolders = Math.max(maxConcurrentHolders, activeHolders.length);
+      activeHolders.pop();
     }),
   ]);
 
-  expect(events).toEqual([
-    "first:start",
-    "first:end",
-    "second:start",
-    "second:end",
-  ]);
+  expect(activeHolders).toEqual([]);
+  expect(maxConcurrentHolders).toBe(1);
 });

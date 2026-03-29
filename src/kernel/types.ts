@@ -5,6 +5,52 @@ export type SessionState =
   | "exited"
   | "transport_lost";
 
+export type SessionLocation = {
+  file: string;
+  line: number;
+  column?: number;
+};
+
+export type SessionBreakpoint = {
+  breakpoint_id: string;
+  file: string;
+  line: number;
+  engine_breakpoint_id?: string;
+};
+
+export type SessionFrame = {
+  frame_ref: string;
+  call_frame_id?: string;
+  function_name?: string;
+  location: SessionLocation;
+};
+
+export type SessionLocal = {
+  frame_ref: string;
+  name: string;
+  value: string;
+  type?: string;
+  value_ref?: string;
+  object_id?: string;
+};
+
+export type PausedSnapshotRecord = {
+  paused_ref: string;
+  captured_at: string;
+  reason?: string;
+  location: SessionLocation;
+  hit_breakpoints?: string[];
+  frames: SessionFrame[];
+  locals: SessionLocal[];
+  exception?: {
+    text?: string;
+    value?: string;
+  };
+  selected_target?: {
+    pid?: number;
+  };
+};
+
 export type SessionRecord = {
   schema_version: 1;
   session_id: string;
@@ -14,8 +60,9 @@ export type SessionRecord = {
   root_command: string[];
   root_pid?: number;
   target_pid?: number;
-  transport_hint?: { ws_url?: string; port?: number };
-  breakpoints: Array<{ breakpoint_id: string; file: string; line: number }>;
+  transport_hint?: { ws_url?: string; port?: number; waiting_for_debugger?: boolean };
+  breakpoints: SessionBreakpoint[];
+  paused_snapshot?: PausedSnapshotRecord;
   current_investigation_id?: string;
   last_known_state?: { reason: string; updated_at: string };
   created_at: string;
