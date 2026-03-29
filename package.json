@@ -1,0 +1,11 @@
+{
+  "name": "nooa-debugger",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "scripts": {
+    "start": "bun run index.ts",
+    "test": "bun test",
+    "check": "bun test"
+  }
+}
