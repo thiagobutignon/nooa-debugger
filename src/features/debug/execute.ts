@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { createBunSession, type BunPausedSnapshot } from "../../adapters/bun/session";
 import { launchBunTarget } from "../../adapters/bun/launch";
+import { createBridgeClient, startSessionBridge, type BridgeClient } from "../../bridge/client";
 import { jsonError, jsonSuccess, type JsonFailure, type JsonSuccess } from "../../core/errors";
 import { createArtifactStore } from "../../kernel/artifacts/store";
 import { createId } from "../../kernel/ids";
@@ -17,6 +18,15 @@ function isProcessAlive(pid?: number): boolean {
     return false;
   }
 }
+
+function isPauseTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.message.includes("Timed out waiting for Debugger.paused")
+    || (error as Error & { code?: string }).code === "bridge.pause_timeout"
+  );
+}
+
+type DebugRuntimeClient = Awaited<ReturnType<typeof createBunSession>> | BridgeClient;
 
 function stores(root: string) {
   return {
@@ -202,7 +212,7 @@ async function recordInvestigationArtifact(
 async function reapplyPersistedBreakpoints(
   sessions: ReturnType<typeof createSessionStore>,
   session: SessionRecord,
-  live: Awaited<ReturnType<typeof createBunSession>>,
+  live: DebugRuntimeClient,
 ): Promise<SessionRecord> {
   if (session.breakpoints.length === 0) {
     return session;
@@ -264,7 +274,7 @@ async function connectLiveSession(
 ): Promise<
   | {
       session: SessionRecord;
-      live: Awaited<ReturnType<typeof createBunSession>>;
+      live: DebugRuntimeClient;
     }
   | {
       session: SessionRecord;
@@ -277,6 +287,30 @@ async function connectLiveSession(
       session: exited,
       error: sessionFailure("runtime.target_exited", "Debug target has exited", exited),
     };
+  }
+
+  const bridgeHint = session.transport_hint?.bridge;
+  if (bridgeHint) {
+    const live = createBridgeClient(bridgeHint);
+
+    try {
+      await live.ping();
+      return {
+        session,
+        live,
+      };
+    } catch (error) {
+      const lost = await markTransportLost(sessions, session, "bridge_connect_failed");
+      return {
+        session: lost,
+        error: sessionFailure(
+          "session.transport_lost",
+          error instanceof Error ? error.message : "Debug bridge could not be rehydrated",
+          lost,
+          true,
+        ),
+      };
+    }
   }
 
   const wsUrl = session.transport_hint?.ws_url;
@@ -358,6 +392,37 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       current_investigation_id: investigation.investigation_id,
     });
 
+    try {
+      const bridge = await startSessionBridge({
+        root: cwd,
+        sessionId: session.session_id,
+        wsUrl: launched.ws_url,
+        targetPid: launched.pid,
+      });
+
+      session = await sessions.put({
+        ...session,
+        transport_hint: {
+          ...session.transport_hint,
+          bridge,
+        },
+      });
+    } catch (error) {
+      if (isProcessAlive(launched.pid)) {
+        process.kill(launched.pid, "SIGTERM");
+      }
+
+      return jsonError(
+        "runtime.attach_failed",
+        error instanceof Error ? error.message : "Debug bridge failed to start",
+        {
+          recoverable: true,
+          session_id: session.session_id,
+          investigation_id: investigation.investigation_id,
+        },
+      );
+    }
+
     const launchArtifactId = await recordInvestigationArtifact(
       investigations,
       artifacts,
@@ -416,6 +481,11 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
   if (action === "stop") {
     const sessionOrError = await resolveSession(sessions, args[2]);
     if ("ok" in sessionOrError) return sessionOrError;
+
+    const bridgeHint = sessionOrError.transport_hint?.bridge;
+    if (bridgeHint) {
+      await createBridgeClient(bridgeHint).shutdown();
+    }
 
     if (sessionOrError.root_pid && isProcessAlive(sessionOrError.root_pid)) {
       process.kill(sessionOrError.root_pid, "SIGTERM");
@@ -523,6 +593,75 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     }
   }
 
+  if (action === "pause") {
+    const sessionOrError = await resolveSession(sessions, args[2]);
+    if ("ok" in sessionOrError) return sessionOrError;
+
+    if (sessionOrError.state === "exited") {
+      return sessionFailure("runtime.target_exited", "Debug target has exited", sessionOrError);
+    }
+
+    const liveOrError = await connectLiveSession(sessions, sessionOrError);
+    if ("error" in liveOrError) {
+      return liveOrError.error;
+    }
+
+    let session = liveOrError.session;
+    const live = liveOrError.live;
+
+    try {
+      const paused = await live.pause(2_000);
+      session = await sessions.put({
+        ...session,
+        state: "paused",
+        paused_snapshot: toPausedSnapshotRecord(paused, session.target_pid),
+        last_known_state: {
+          reason: "pause_requested",
+          updated_at: new Date().toISOString(),
+        },
+      });
+
+      const artifactId = await recordInvestigationArtifact(
+        investigations,
+        artifacts,
+        session,
+        "debug.pause",
+        "debug_snapshot",
+        {
+          event: "debug.pause",
+          paused_ref: session.paused_snapshot?.paused_ref,
+          reason: session.paused_snapshot?.reason,
+          location: session.paused_snapshot?.location,
+          frame_refs: session.paused_snapshot?.frames.map((frame) => frame.frame_ref),
+        },
+      );
+
+      return jsonSuccess({
+        session_id: session.session_id,
+        investigation_id: session.current_investigation_id,
+        artifact_id: artifactId,
+        runtime: session.runtime,
+        state: session.state,
+        paused_ref: session.paused_snapshot?.paused_ref,
+        location: session.paused_snapshot?.location,
+      });
+    } catch (error) {
+      if (!isProcessAlive(session.root_pid)) {
+        const exited = await markExited(sessions, session, "target_exited");
+        return sessionFailure("runtime.target_exited", "Debug target has exited", exited);
+      }
+
+      return sessionFailure(
+        "runtime.attach_failed",
+        error instanceof Error ? error.message : "Debug target could not be paused",
+        session,
+        true,
+      );
+    } finally {
+      await live.close().catch(() => {});
+    }
+  }
+
   if (action === "state") {
     const sessionOrError = await resolveSession(sessions, args[2]);
     if ("ok" in sessionOrError) return sessionOrError;
@@ -616,25 +755,27 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     const live = liveOrError.live;
 
     try {
-      try {
-        const refreshedSnapshot = await live.snapshotPaused(500);
-        session = await sessions.put({
-          ...session,
-          state: "paused",
-          paused_snapshot: toPausedSnapshotRecord(refreshedSnapshot, session.target_pid),
-          last_known_state: {
-            reason: "paused_refresh",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      } catch (error) {
-        const lost = await markTransportLost(sessions, session, "paused_refresh_failed");
-        return sessionFailure(
-          "session.transport_lost",
-          error instanceof Error ? error.message : "Paused transport could not be refreshed",
-          lost,
-          true,
-        );
+      if (!session.transport_hint?.bridge) {
+        try {
+          const refreshedSnapshot = await live.snapshotPaused(500);
+          session = await sessions.put({
+            ...session,
+            state: "paused",
+            paused_snapshot: toPausedSnapshotRecord(refreshedSnapshot, session.target_pid),
+            last_known_state: {
+              reason: "paused_refresh",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        } catch (error) {
+          const lost = await markTransportLost(sessions, session, "paused_refresh_failed");
+          return sessionFailure(
+            "session.transport_lost",
+            error instanceof Error ? error.message : "Paused transport could not be refreshed",
+            lost,
+            true,
+          );
+        }
       }
 
       const frame = session.paused_snapshot?.frames[0];
@@ -694,26 +835,28 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     const live = liveOrError.live;
 
     try {
-      session = await reapplyPersistedBreakpoints(sessions, session, live);
+      if (!session.transport_hint?.bridge) {
+        session = await reapplyPersistedBreakpoints(sessions, session, live);
+      }
       let paused: BunPausedSnapshot;
 
       if (session.state === "paused") {
-        try {
-          const refreshedSnapshot = await live.snapshotPaused(500);
-          session = await sessions.put({
-            ...session,
-            state: "paused",
-            paused_snapshot: toPausedSnapshotRecord(refreshedSnapshot, session.target_pid),
-            last_known_state: {
-              reason: "paused_refresh",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        } catch {
-          // If Bun does not replay the paused event on reattach, continue can still proceed.
+        if (!session.transport_hint?.bridge) {
+          try {
+            const refreshedSnapshot = await live.snapshotPaused(500);
+            session = await sessions.put({
+              ...session,
+              state: "paused",
+              paused_snapshot: toPausedSnapshotRecord(refreshedSnapshot, session.target_pid),
+              last_known_state: {
+                reason: "paused_refresh",
+                updated_at: new Date().toISOString(),
+              },
+            });
+          } catch {
+            // If Bun does not replay the paused event on reattach, continue can still proceed.
+          }
         }
-        paused = await live.continueUntilPaused(2_000);
-      } else if (waitingForDebugger) {
         paused = await live.continueUntilPaused(2_000);
       } else {
         paused = await live.snapshotPaused(2_000);
@@ -758,6 +901,29 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
         location: session.paused_snapshot?.location,
       });
     } catch (error) {
+      if (isPauseTimeoutError(error)) {
+        session = await sessions.put({
+          ...session,
+          state: "running",
+          paused_snapshot: undefined,
+          transport_hint: {
+            ...session.transport_hint,
+            waiting_for_debugger: false,
+          },
+          last_known_state: {
+            reason: waitingForDebugger ? "waiting_for_debugger" : "continued",
+            updated_at: new Date().toISOString(),
+          },
+        });
+
+        return jsonSuccess({
+          session_id: session.session_id,
+          investigation_id: session.current_investigation_id,
+          runtime: session.runtime,
+          state: session.state,
+        });
+      }
+
       if (!isProcessAlive(session.root_pid)) {
         const exited = await markExited(sessions, session, "target_exited");
         return sessionFailure("runtime.target_exited", "Debug target has exited", exited);

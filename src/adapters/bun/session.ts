@@ -73,7 +73,7 @@ export type BunSession = {
     breakpointId?: string;
     locations: BunBreakpointLocation[];
   }>;
-  runIfWaitingForDebugger(timeoutMs?: number): Promise<BunPausedSnapshot>;
+  pause(timeoutMs?: number): Promise<BunPausedSnapshot>;
   continueUntilPaused(timeoutMs?: number): Promise<BunPausedSnapshot>;
   snapshotPaused(timeoutMs?: number): Promise<BunPausedSnapshot>;
   evaluate(expression: string): Promise<any>;
@@ -142,6 +142,7 @@ function stringifyRemoteObject(remote?: InspectorRemoteObject): string {
 async function captureSnapshot(
   client: ReturnType<typeof createBunCdpClient>,
   paused: InspectorPausedEvent,
+  scriptUrls: Map<string, string>,
 ): Promise<BunPausedSnapshot> {
   const callFrames = paused.params?.callFrames ?? [];
   const topFrame = callFrames[0];
@@ -173,7 +174,11 @@ async function captureSnapshot(
       functionName: topFrame?.functionName,
       location: {
         scriptId: topFrame?.location?.scriptId,
-        file: normalizeInspectorFile(topFrame?.url ?? topFrame?.location?.url),
+        file: normalizeInspectorFile(
+          topFrame?.url
+          ?? topFrame?.location?.url
+          ?? scriptUrls.get(topFrame?.location?.scriptId ?? ""),
+        ),
         line: (topFrame?.location?.lineNumber ?? -1) + 1,
         column: (topFrame?.location?.columnNumber ?? 0) + 1,
       },
@@ -185,11 +190,27 @@ async function captureSnapshot(
 
 export async function createBunSession(wsUrl: string): Promise<BunSession> {
   const client = createBunCdpClient(wsUrl);
+  const scriptUrls = new Map<string, string>();
   let currentSnapshot: BunPausedSnapshot | undefined;
+
+  client.onEvent((event) => {
+    if (event?.method !== "Debugger.scriptParsed") {
+      return;
+    }
+
+    const scriptId = event.params?.scriptId;
+    const url = normalizeInspectorFile(event.params?.sourceURL ?? event.params?.url);
+    if (!scriptId || !url) {
+      return;
+    }
+
+    scriptUrls.set(scriptId, url);
+  });
 
   await client.send("Runtime.enable");
   await client.send("Debugger.enable");
   await client.send("Debugger.setBreakpointsActive", { active: true }).catch(() => {});
+  await client.send("Debugger.setPauseOnDebuggerStatements", { enabled: true }).catch(() => {});
 
   return {
     async setBreakpoint(fileLine: string) {
@@ -211,23 +232,23 @@ export async function createBunSession(wsUrl: string): Promise<BunSession> {
       };
     },
 
-    async runIfWaitingForDebugger(timeoutMs = 2_000) {
-      await client.send("Runtime.runIfWaitingForDebugger");
+    async pause(timeoutMs = 2_000) {
+      await client.send("Debugger.pause");
       const paused = (await client.waitForPaused(timeoutMs)) as InspectorPausedEvent;
-      currentSnapshot = await captureSnapshot(client, paused);
+      currentSnapshot = await captureSnapshot(client, paused, scriptUrls);
       return currentSnapshot;
     },
 
     async continueUntilPaused(timeoutMs = 2_000) {
       await client.send("Debugger.resume");
       const paused = (await client.waitForPaused(timeoutMs)) as InspectorPausedEvent;
-      currentSnapshot = await captureSnapshot(client, paused);
+      currentSnapshot = await captureSnapshot(client, paused, scriptUrls);
       return currentSnapshot;
     },
 
     async snapshotPaused(timeoutMs = 2_000) {
       const paused = (await client.waitForPaused(timeoutMs)) as InspectorPausedEvent;
-      currentSnapshot = await captureSnapshot(client, paused);
+      currentSnapshot = await captureSnapshot(client, paused, scriptUrls);
       return currentSnapshot;
     },
 

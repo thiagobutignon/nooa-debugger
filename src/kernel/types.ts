@@ -5,6 +5,13 @@ export type SessionState =
   | "exited"
   | "transport_lost";
 
+export type SessionBridgeHint = {
+  host: string;
+  port: number;
+  token: string;
+  bridge_pid?: number;
+};
+
 export type SessionLocation = {
   file: string;
   line: number;
@@ -60,7 +67,12 @@ export type SessionRecord = {
   root_command: string[];
   root_pid?: number;
   target_pid?: number;
-  transport_hint?: { ws_url?: string; port?: number; waiting_for_debugger?: boolean };
+  transport_hint?: {
+    ws_url?: string;
+    port?: number;
+    waiting_for_debugger?: boolean;
+    bridge?: SessionBridgeHint;
+  };
   breakpoints: SessionBreakpoint[];
   paused_snapshot?: PausedSnapshotRecord;
   current_investigation_id?: string;

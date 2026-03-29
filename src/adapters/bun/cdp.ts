@@ -14,6 +14,8 @@ type PendingPausedWaiter = {
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
+type EventListener = (event: any) => void;
+
 function createConnectionError(message: string): Error {
   return new Error(message);
 }
@@ -34,11 +36,13 @@ export function createBunCdpClient(wsUrl: string): {
   send(method: string, params?: Record<string, unknown>): Promise<any>;
   close(): Promise<void>;
   waitForPaused(timeoutMs?: number): Promise<PausedEvent>;
+  onEvent(listener: EventListener): () => void;
 } {
   const socket = new WebSocket(wsUrl);
   const pendingRequests = new Map<number, PendingRequest>();
   const pausedEvents: PausedEvent[] = [];
   const pausedWaiters: PendingPausedWaiter[] = [];
+  const eventListeners = new Set<EventListener>();
 
   let nextId = 1;
   let closed = false;
@@ -143,6 +147,10 @@ export function createBunCdpClient(wsUrl: string): {
       return;
     }
 
+    for (const listener of eventListeners) {
+      listener(payload);
+    }
+
     if (payload?.method === "Debugger.paused") {
       resolvePausedEvent(payload as PausedEvent);
     }
@@ -212,6 +220,13 @@ export function createBunCdpClient(wsUrl: string): {
 
         pausedWaiters.push({ resolve, reject, timeoutId });
       });
+    },
+
+    onEvent(listener) {
+      eventListeners.add(listener);
+      return () => {
+        eventListeners.delete(listener);
+      };
     },
   };
 }

@@ -29,6 +29,7 @@ function startMockInspector() {
           payload.method === "Runtime.enable"
           || payload.method === "Debugger.enable"
           || payload.method === "Debugger.setBreakpointsActive"
+          || payload.method === "Debugger.setPauseOnDebuggerStatements"
         ) {
           socket.send(JSON.stringify({ id: payload.id, result: {} }));
           return;
@@ -89,6 +90,38 @@ function startMockInspector() {
                       columnNumber: 0,
                     },
                     scopeChain: [],
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (payload.method === "Debugger.pause") {
+          socket.send(JSON.stringify({ id: payload.id, result: {} }));
+          socket.send(
+            JSON.stringify({
+              method: "Debugger.paused",
+              params: {
+                reason: "other",
+                callFrames: [
+                  {
+                    callFrameId: "frame-1",
+                    functionName: "main",
+                    url: fixturePath,
+                    location: {
+                      scriptId: "script-1",
+                      lineNumber: 5,
+                      columnNumber: 2,
+                    },
+                    scopeChain: [
+                      {
+                        type: "local",
+                        name: "Local",
+                        object: { objectId: "scope-1" },
+                      },
+                    ],
                   },
                 ],
               },
@@ -158,12 +191,43 @@ test("createBunSession enables Bun CDP domains and translates file:line breakpoi
       "Runtime.enable",
       "Debugger.enable",
       "Debugger.setBreakpointsActive",
+      "Debugger.setPauseOnDebuggerStatements",
       "Debugger.setBreakpointByUrl",
     ]);
-    expect(mock.seen[3].params.url).toBe(fixturePath);
-    expect(mock.seen[3].params.lineNumber).toBe(5);
+    expect(mock.seen[3].params).toEqual({ enabled: true });
+    expect(mock.seen[4].params.url).toBe(fixturePath);
+    expect(mock.seen[4].params.lineNumber).toBe(5);
     expect(breakpoint.breakpointId).toBe("bp-1");
     expect(breakpoint.locations[0].url).toBe(fixturePath);
+  } finally {
+    await session.close();
+  }
+});
+
+test("createBunSession can pause on demand and evaluate the top frame", async () => {
+  const mock = startMockInspector();
+  server = mock.server;
+
+  const session = await createBunSession(`ws://127.0.0.1:${server.port}/`);
+  try {
+    const pausable = session as typeof session & { pause(): Promise<unknown> };
+    const snapshot = await pausable.pause();
+
+    expect(mock.seen.map((entry) => entry.method)).toEqual([
+      "Runtime.enable",
+      "Debugger.enable",
+      "Debugger.setBreakpointsActive",
+      "Debugger.setPauseOnDebuggerStatements",
+      "Debugger.pause",
+      "Runtime.getProperties",
+    ]);
+    expect(snapshot.topFrame.functionName).toBe("main");
+    expect(snapshot.topFrame.location.file).toBe(fixturePath);
+    expect(snapshot.topFrame.location.line).toBe(6);
+
+    const evaluation = await session.evaluate("tracked + 1");
+    expect(mock.seen.some((entry) => entry.method === "Debugger.evaluateOnCallFrame")).toBe(true);
+    expect(evaluation.result.value).toBe(42);
   } finally {
     await session.close();
   }
@@ -190,6 +254,78 @@ test("createBunSession captures a paused snapshot and evaluates the top frame", 
     const evaluation = await session.evaluate("tracked + 1");
     expect(mock.seen.some((entry) => entry.method === "Debugger.evaluateOnCallFrame")).toBe(true);
     expect(evaluation.result.value).toBe(42);
+  } finally {
+    await session.close();
+  }
+});
+
+test("createBunSession resolves paused frame files from scriptParsed metadata", async () => {
+  server = Bun.serve({
+    port: 0,
+    fetch(request, current) {
+      if (current.upgrade(request)) {
+        return;
+      }
+      return new Response("ok");
+    },
+    websocket: {
+      message(socket, message) {
+        const payload = JSON.parse(decodeMessage(message));
+
+        if (
+          payload.method === "Runtime.enable"
+          || payload.method === "Debugger.enable"
+          || payload.method === "Debugger.setBreakpointsActive"
+          || payload.method === "Debugger.setPauseOnDebuggerStatements"
+        ) {
+          socket.send(JSON.stringify({ id: payload.id, result: {} }));
+          return;
+        }
+
+        if (payload.method === "Debugger.pause") {
+          socket.send(JSON.stringify({ id: payload.id, result: {} }));
+          socket.send(
+            JSON.stringify({
+              method: "Debugger.scriptParsed",
+              params: {
+                scriptId: "script-9",
+                url: fixturePath,
+              },
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              method: "Debugger.paused",
+              params: {
+                reason: "other",
+                callFrames: [
+                  {
+                    callFrameId: "frame-9",
+                    functionName: "tick",
+                    location: {
+                      scriptId: "script-9",
+                      lineNumber: 9,
+                      columnNumber: 0,
+                    },
+                    scopeChain: [],
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+      },
+    },
+  });
+
+  const session = await createBunSession(`ws://127.0.0.1:${server.port}/`);
+  try {
+    const pausable = session as typeof session & { pause(): Promise<unknown> };
+    const snapshot = await pausable.pause();
+
+    expect(snapshot.topFrame.location.file).toBe(fixturePath);
+    expect(snapshot.topFrame.location.line).toBe(10);
   } finally {
     await session.close();
   }

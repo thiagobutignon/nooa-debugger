@@ -5,6 +5,7 @@ Agent-first debugger kernel for Bun-first runtime investigation.
 ## Current Slice
 
 - `debug launch`
+- `debug pause`
 - `debug break`
 - `debug continue`
 - `debug state`
@@ -20,9 +21,9 @@ Agent-first debugger kernel for Bun-first runtime investigation.
 
 ## Bun Status
 
-- Verified: robust Bun inspector launch, persisted `ws_url`, CDP request/response handling, breakpoint metadata persistence, paused-snapshot schema, and JSON contracts for `state|stack|vars|eval`.
-- Verified by tests: adapter/unit coverage for Bun launch, CDP transport, session attach helpers, and CLI state/error handling.
-- Blocked in live dogfooding on Bun `1.3.10`: the inspector did not emit a usable `Debugger.paused` event for `Debugger.setBreakpointByUrl` or a plain `debugger;` statement in this workflow.
-- Additional probe: `Debugger.pause` only produced `Debugger.paused` after a follow-up `Runtime.evaluate("")`, and that pause landed in injected inspector code rather than user frames.
+- Verified: robust Bun inspector launch, persisted `ws_url`, long-lived bridge process per session, real pause-on-demand via `Debugger.pause`, paused-snapshot persistence, and JSON contracts for `pause|state|stack|vars|eval`.
+- Verified by tests: adapter/unit coverage for Bun launch, CDP transport, scriptId-to-url rehydration, session attach helpers, and CLI state/error handling.
+- Verified by dogfooding on Bun `1.3.10`: `debug launch -> debug pause -> debug state -> debug eval -> debug stop` now works end to end against a live Bun target.
+- Still runtime-limited on Bun `1.3.10`: the inspector did not emit a usable `Debugger.paused` event for the short-CLI `Debugger.setBreakpointByUrl` / plain `debugger;` workflow that depends on cold reattach semantics.
 
-The paused-state command surface is implemented, but end-to-end live Bun pause/breakpoint flows remain runtime-blocked until this inspector behavior is worked around or fixed upstream.
+The current Bun slice is reliable for agent-first `pause`/inspection flows over a live bridge. Breakpoint-first flows still need deeper reverse-engineering of Bun's runtime/frontend behavior.

@@ -11,7 +11,7 @@ type CreateSessionInput = Pick<
   current_investigation_id?: string;
   root_pid?: number;
   target_pid?: number;
-  transport_hint?: { ws_url?: string; port?: number; waiting_for_debugger?: boolean };
+  transport_hint?: SessionRecord["transport_hint"];
   paused_snapshot?: SessionRecord["paused_snapshot"];
 };
 
