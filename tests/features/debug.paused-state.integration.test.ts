@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 // Bun 1.3.10 currently does not emit a usable Debugger.paused event for this
-// flow in local dogfooding, even when attached to the inspector and waiting.
+// flow in local dogfooding, even with a bridge kept alive from debug launch.
 test.skip("debugger can wait for a Bun debugger statement and inspect runtime state", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "nooa-debugger-paused-state-"));
 

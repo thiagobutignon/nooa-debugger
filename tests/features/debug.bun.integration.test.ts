@@ -34,6 +34,9 @@ test("debug status reloads persisted session and stop exits it", async () => {
     cwd,
   });
   const launchPayload = JSON.parse(launchWrites.join("").trim());
+  expect(launchPayload.ok).toBe(true);
+  expect(launchPayload.data.daemon.running).toBe(true);
+  expect(typeof launchPayload.data.daemon.pid).toBe("number");
 
   const statusWrites: string[] = [];
   await main(["debug", "status", launchPayload.data.session_id], {
@@ -44,6 +47,8 @@ test("debug status reloads persisted session and stop exits it", async () => {
   expect(statusPayload.ok).toBe(true);
   expect(statusPayload.data.session_id).toBe(launchPayload.data.session_id);
   expect(["running", "created"]).toContain(statusPayload.data.state);
+  expect(statusPayload.data.daemon.running).toBe(true);
+  expect(statusPayload.data.daemon.pid).toBe(launchPayload.data.daemon.pid);
 
   const stopWrites: string[] = [];
   await main(["debug", "stop", launchPayload.data.session_id], {
@@ -53,6 +58,7 @@ test("debug status reloads persisted session and stop exits it", async () => {
   const stopPayload = JSON.parse(stopWrites.join("").trim());
   expect(stopPayload.ok).toBe(true);
   expect(stopPayload.data.state).toBe("exited");
+  expect(stopPayload.data.daemon.running).toBe(false);
 });
 
 test("debug launch followed by debug pause can inspect a live Bun target", async () => {
@@ -60,6 +66,8 @@ test("debug launch followed by debug pause can inspect a live Bun target", async
 
   const launch = await runCommand(["debug", "launch", "--", "bun", "run", pauseFixturePath], cwd);
   expect(launch.ok).toBe(true);
+  expect(launch.data.daemon.running).toBe(true);
+  expect(typeof launch.data.daemon.pid).toBe("number");
   sessionIdsToStop.push({ cwd, sessionId: launch.data.session_id });
 
   await Bun.sleep(100);

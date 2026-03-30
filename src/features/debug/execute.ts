@@ -7,7 +7,7 @@ import { createArtifactStore } from "../../kernel/artifacts/store";
 import { createId } from "../../kernel/ids";
 import { createInvestigationStore } from "../../kernel/investigations/store";
 import { createSessionStore } from "../../kernel/sessions/store";
-import type { PausedSnapshotRecord, SessionRecord } from "../../kernel/types";
+import type { PausedSnapshotRecord, SessionBridgeHint, SessionRecord } from "../../kernel/types";
 
 function isProcessAlive(pid?: number): boolean {
   if (!pid) return false;
@@ -27,6 +27,12 @@ function isPauseTimeoutError(error: unknown): boolean {
 }
 
 type DebugRuntimeClient = Awaited<ReturnType<typeof createBunSession>> | BridgeClient;
+type DebugDaemonStatus = {
+  running: boolean;
+  pid?: number;
+  host?: string;
+  port?: number;
+};
 
 function stores(root: string) {
   return {
@@ -34,6 +40,36 @@ function stores(root: string) {
     investigations: createInvestigationStore(root),
     artifacts: createArtifactStore(root),
   };
+}
+
+function daemonStatusFromBridge(
+  bridge: SessionBridgeHint | undefined,
+  running: boolean,
+): DebugDaemonStatus {
+  if (!bridge) {
+    return { running };
+  }
+
+  return {
+    running,
+    pid: bridge.bridge_pid,
+    host: bridge.host,
+    port: bridge.port,
+  };
+}
+
+async function resolveDaemonStatus(session: SessionRecord): Promise<DebugDaemonStatus | undefined> {
+  const bridge = session.transport_hint?.bridge;
+  if (!bridge) {
+    return undefined;
+  }
+
+  try {
+    await createBridgeClient(bridge).ping();
+    return daemonStatusFromBridge(bridge, true);
+  } catch {
+    return daemonStatusFromBridge(bridge, false);
+  }
 }
 
 function sessionFailure(
@@ -455,6 +491,7 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       target_pid: session.target_pid,
       command: session.root_command,
       waiting_for_debugger: session.transport_hint?.waiting_for_debugger ?? false,
+      daemon: daemonStatusFromBridge(session.transport_hint?.bridge, true),
     });
   }
 
@@ -466,6 +503,7 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       sessionOrError.state === "exited" || isProcessAlive(sessionOrError.root_pid)
         ? sessionOrError
         : await markExited(sessions, sessionOrError, "status_refresh");
+    const daemon = await resolveDaemonStatus(updated);
 
     return jsonSuccess({
       session_id: updated.session_id,
@@ -475,6 +513,7 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       root_pid: updated.root_pid,
       target_pid: updated.target_pid,
       command: updated.root_command,
+      daemon,
     });
   }
 
@@ -519,6 +558,7 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       investigation_id: updated.current_investigation_id,
       artifact_id: artifactId,
       state: updated.state,
+      daemon: daemonStatusFromBridge(sessionOrError.transport_hint?.bridge, false),
     });
   }
 
