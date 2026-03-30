@@ -61,14 +61,15 @@ export type PausedSnapshotRecord = {
 export type SessionRecord = {
   schema_version: 1;
   session_id: string;
-  adapter: "bun";
-  runtime: "bun";
+  adapter: "bun" | "node";
+  runtime: "bun" | "node";
   state: SessionState;
   root_command: string[];
   root_pid?: number;
   target_pid?: number;
   transport_hint?: {
     ws_url?: string;
+    host?: string;
     port?: number;
     waiting_for_debugger?: boolean;
     bridge?: SessionBridgeHint;
