@@ -19,6 +19,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 }
 
 const args = parseArgs(Bun.argv.slice(2));
+const adapter = args["adapter"] === "node" ? "node" : "bun";
 const wsUrl = args["ws-url"];
 const readyPath = args["ready-path"];
 const targetPid = Number(args["target-pid"] ?? 0);
@@ -29,6 +30,7 @@ if (!wsUrl || !readyPath) {
 
 try {
   await startBridgeServer({
+    adapter,
     wsUrl,
     readyPath,
     targetPid: Number.isFinite(targetPid) && targetPid > 0 ? targetPid : undefined,

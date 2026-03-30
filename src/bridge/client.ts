@@ -116,6 +116,7 @@ async function sendBridgeRequest<T>(
 }
 
 export async function startSessionBridge(options: {
+  adapter: "bun" | "node";
   root: string;
   sessionId: string;
   wsUrl: string;
@@ -130,6 +131,8 @@ export async function startSessionBridge(options: {
       "bun",
       "run",
       entryPath,
+      "--adapter",
+      options.adapter,
       "--root",
       options.root,
       "--session-id",

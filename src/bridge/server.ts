@@ -1,5 +1,6 @@
 import { createServer } from "node:net";
 import { createBunSession, type BunPausedSnapshot } from "../adapters/bun/session";
+import { createNodeSession, type NodePausedSnapshot } from "../adapters/node/session";
 import { writeJsonAtomically } from "../kernel/storage/fs";
 import type {
   BridgeBreakpointResult,
@@ -9,6 +10,51 @@ import type {
   BridgeResponse,
   BridgeStatusResult,
 } from "./types";
+
+type BridgeLiveClient = {
+  ping(): Promise<void>;
+  releaseWaitingForDebugger(): Promise<void>;
+  setBreakpoint(fileLine: string): Promise<BridgeBreakpointResult>;
+  pause(timeoutMs?: number): Promise<BunPausedSnapshot | NodePausedSnapshot>;
+  continueUntilPaused(timeoutMs?: number): Promise<BunPausedSnapshot | NodePausedSnapshot>;
+  snapshotPaused(timeoutMs?: number): Promise<BunPausedSnapshot | NodePausedSnapshot>;
+  evaluate(expression: string): Promise<{ result?: unknown }>;
+  close(): Promise<void>;
+};
+
+async function createBridgeLiveClient(
+  adapter: "bun" | "node",
+  wsUrl: string,
+): Promise<BridgeLiveClient> {
+  if (adapter === "node") {
+    const node = await createNodeSession({ wsUrl });
+    return {
+      ping: () => node.ping(),
+      releaseWaitingForDebugger: () => node.releaseWaitingForDebugger(),
+      setBreakpoint: (fileLine: string) => node.break(fileLine),
+      pause: (timeoutMs?: number) => node.pause(timeoutMs),
+      async continueUntilPaused(timeoutMs?: number) {
+        await node.continue();
+        return node.snapshotPaused(timeoutMs);
+      },
+      snapshotPaused: (timeoutMs?: number) => node.snapshotPaused(timeoutMs),
+      evaluate: (expression: string) => node.eval(expression),
+      close: () => node.close(),
+    };
+  }
+
+  const bun = await createBunSession(wsUrl);
+  return {
+    ping: () => bun.ping(),
+    releaseWaitingForDebugger: () => bun.releaseWaitingForDebugger(),
+    setBreakpoint: (fileLine: string) => bun.setBreakpoint(fileLine),
+    pause: (timeoutMs?: number) => bun.pause(timeoutMs),
+    continueUntilPaused: (timeoutMs?: number) => bun.continueUntilPaused(timeoutMs),
+    snapshotPaused: (timeoutMs?: number) => bun.snapshotPaused(timeoutMs),
+    evaluate: (expression: string) => bun.evaluate(expression),
+    close: () => bun.close(),
+  };
+}
 
 function ok<T>(data: T): BridgeResponse<T> {
   return { ok: true, data };
@@ -42,13 +88,14 @@ function isProcessAlive(pid?: number): boolean {
 }
 
 export async function startBridgeServer(options: {
+  adapter: "bun" | "node";
   wsUrl: string;
   readyPath: string;
   targetPid?: number;
 }): Promise<void> {
-  const live = await createBunSession(options.wsUrl);
+  const live = await createBridgeLiveClient(options.adapter, options.wsUrl);
   const bridgeToken = crypto.randomUUID();
-  let currentSnapshot: BunPausedSnapshot | undefined;
+  let currentSnapshot: BunPausedSnapshot | NodePausedSnapshot | undefined;
   let currentState: "running" | "paused" | "closed" = "running";
   let closing = false;
   let queue = Promise.resolve();

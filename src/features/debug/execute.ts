@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { createBunSession, type BunPausedSnapshot } from "../../adapters/bun/session";
 import { launchBunTarget } from "../../adapters/bun/launch";
-import { createBridgeClient, startSessionBridge, type BridgeClient } from "../../bridge/client";
+import { launchNodeTarget } from "../../adapters/node/launch";
+import { createNodeSession, type NodePausedSnapshot } from "../../adapters/node/session";
+import { createBridgeClient, startSessionBridge } from "../../bridge/client";
 import { jsonError, jsonSuccess, type JsonFailure, type JsonSuccess } from "../../core/errors";
 import { createArtifactStore } from "../../kernel/artifacts/store";
 import { getBackendCatalog } from "../../kernel/backends";
@@ -27,7 +29,17 @@ function isPauseTimeoutError(error: unknown): boolean {
   );
 }
 
-type DebugRuntimeClient = Awaited<ReturnType<typeof createBunSession>> | BridgeClient;
+type DebugRuntimeClient = {
+  setBreakpoint(fileLine: string): Promise<{ breakpointId?: string; locations: unknown[] }>;
+  pause(timeoutMs?: number): Promise<RuntimePausedSnapshot>;
+  continueUntilPaused(timeoutMs?: number): Promise<RuntimePausedSnapshot>;
+  snapshotPaused(timeoutMs?: number): Promise<RuntimePausedSnapshot>;
+  evaluate(expression: string): Promise<any>;
+  ping?(): Promise<void>;
+  releaseWaitingForDebugger(): Promise<void>;
+  close(): Promise<void>;
+};
+type RuntimePausedSnapshot = BunPausedSnapshot | NodePausedSnapshot;
 type DebugDaemonStatus = {
   running: boolean;
   pid?: number;
@@ -40,6 +52,45 @@ function stores(root: string) {
     sessions: createSessionStore(root),
     investigations: createInvestigationStore(root),
     artifacts: createArtifactStore(root),
+  };
+}
+
+async function createNodeRuntimeClient(wsUrl: string): Promise<DebugRuntimeClient> {
+  const node = await createNodeSession({ wsUrl });
+
+  return {
+    ping() {
+      return node.ping();
+    },
+
+    setBreakpoint(fileLine: string) {
+      return node.break(fileLine);
+    },
+
+    pause(timeoutMs = 2_000) {
+      return node.pause(timeoutMs);
+    },
+
+    async continueUntilPaused(timeoutMs = 2_000) {
+      await node.continue();
+      return node.snapshotPaused(timeoutMs);
+    },
+
+    snapshotPaused(timeoutMs = 2_000) {
+      return node.snapshotPaused(timeoutMs);
+    },
+
+    evaluate(expression: string) {
+      return node.eval(expression);
+    },
+
+    releaseWaitingForDebugger() {
+      return node.releaseWaitingForDebugger();
+    },
+
+    close() {
+      return node.close();
+    },
   };
 }
 
@@ -162,6 +213,20 @@ function parseLaunchArgs(args: string[]): { command: string[]; breakOnStart: boo
   };
 }
 
+function readRuntimeFlag(args: string[]): "bun" | "node" | undefined {
+  const index = args.indexOf("--runtime");
+  if (index < 0) {
+    return undefined;
+  }
+
+  const value = args[index + 1];
+  if (value === "bun" || value === "node") {
+    return value;
+  }
+
+  return undefined;
+}
+
 function parseBreakpointLocation(raw: string | undefined): { file: string; line: number } | undefined {
   if (!raw) return undefined;
 
@@ -222,7 +287,7 @@ function stringifyRuntimeValue(value: {
 
 function isWaitingForDebuggerStartupPause(
   session: SessionRecord,
-  snapshot: BunPausedSnapshot,
+  snapshot: RuntimePausedSnapshot,
 ): boolean {
   if (snapshot.reason === "Break on start") {
     return true;
@@ -237,7 +302,7 @@ function isWaitingForDebuggerStartupPause(
 }
 
 function toPausedSnapshotRecord(
-  snapshot: BunPausedSnapshot,
+  snapshot: RuntimePausedSnapshot,
   targetPid?: number,
 ): PausedSnapshotRecord {
   const frames = snapshot.rawCallFrames.map((frame, index) => ({
@@ -246,7 +311,7 @@ function toPausedSnapshotRecord(
     function_name: frame.functionName,
     location: {
       file: normalizeFilePath(
-        frame.url ?? frame.location?.url ?? snapshot.topFrame.location.file ?? "<unknown>",
+        frame.url || frame.location?.url || snapshot.topFrame.location.file || "<unknown>",
       ),
       line: (frame.location?.lineNumber ?? -1) + 1,
       column: (frame.location?.columnNumber ?? 0) + 1,
@@ -442,7 +507,9 @@ async function connectLiveSession(
   try {
     return {
       session,
-      live: await createBunSession(wsUrl),
+      live: session.adapter === "node"
+        ? await createNodeRuntimeClient(wsUrl)
+        : await createBunSession(wsUrl),
     };
   } catch (error) {
     const lost = await markTransportLost(sessions, session, "transport_connect_failed");
@@ -507,13 +574,103 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
   }
 
   if (action === "launch") {
+    const runtime = readRuntimeFlag(args) ?? "bun";
     const { command, breakOnStart } = parseLaunchArgs(args);
     if (command.length === 0) {
-      return jsonError("runtime.attach_failed", "Missing Bun command after --", {
+      return jsonError("runtime.attach_failed", `Missing ${runtime} command after --`, {
         recoverable: true,
-        suggested_next_commands: ["debug launch -- bun run path/to/file.ts"],
+        suggested_next_commands: runtime === "node"
+          ? ["debug launch --runtime node -- node path/to/file.js"]
+          : ["debug launch -- bun run path/to/file.ts"],
       });
     }
+
+    if (runtime === "node") {
+      const launched = await launchNodeTarget(command, { breakOnStart });
+
+      const investigation = await investigations.create({});
+      let session = await sessions.create({
+        adapter: "node",
+        runtime: "node",
+        state: "running",
+        root_command: launched.command,
+        root_pid: launched.pid,
+        target_pid: launched.pid,
+        transport_hint: {
+          ws_url: launched.ws_url,
+          waiting_for_debugger: breakOnStart,
+        },
+        current_investigation_id: investigation.investigation_id,
+      });
+
+      try {
+        const bridge = await startSessionBridge({
+          adapter: "node",
+          root: cwd,
+          sessionId: session.session_id,
+          wsUrl: launched.ws_url,
+          targetPid: launched.pid,
+        });
+
+        session = await sessions.put({
+          ...session,
+          transport_hint: {
+            ...session.transport_hint,
+            bridge,
+          },
+        });
+      } catch (error) {
+        if (isProcessAlive(launched.pid)) {
+          process.kill(launched.pid, "SIGTERM");
+        }
+
+        return jsonError(
+          "runtime.attach_failed",
+          error instanceof Error ? error.message : "Debug bridge failed to start",
+          {
+            recoverable: true,
+            session_id: session.session_id,
+            investigation_id: investigation.investigation_id,
+          },
+        );
+      }
+
+      const launchArtifactId = await recordInvestigationArtifact(
+        investigations,
+        artifacts,
+        session,
+        "debug.launch",
+        "session_event",
+        {
+          event: "debug.launch",
+          command: launched.command,
+          pid: launched.pid,
+          state: breakOnStart ? "waiting_for_debugger" : session.state,
+        },
+      );
+
+      session = await sessions.put({
+        ...session,
+        last_known_state: {
+          reason: breakOnStart ? "waiting_for_debugger" : "launched",
+          updated_at: new Date().toISOString(),
+        },
+      });
+
+      return jsonSuccess({
+        session_id: session.session_id,
+        investigation_id: investigation.investigation_id,
+        artifact_id: launchArtifactId,
+        runtime: "node",
+        state: session.state,
+        root_pid: session.root_pid,
+        target_pid: session.target_pid,
+        command: session.root_command,
+        waiting_for_debugger: session.transport_hint?.waiting_for_debugger ?? false,
+        daemon: daemonStatusFromBridge(session.transport_hint?.bridge, true),
+      });
+    }
+
     if (command[0] !== "bun") {
       return jsonError("runtime.unsupported_operation", "Only Bun targets are supported in V1", {
         recoverable: false,
@@ -539,6 +696,7 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
 
     try {
       const bridge = await startSessionBridge({
+        adapter: "bun",
         root: cwd,
         sessionId: session.session_id,
         wsUrl: launched.ws_url,
@@ -999,7 +1157,7 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
         await live.releaseWaitingForDebugger();
       }
 
-      let paused: BunPausedSnapshot;
+      let paused: RuntimePausedSnapshot;
 
       if (session.state === "paused") {
         if (!session.transport_hint?.bridge) {
