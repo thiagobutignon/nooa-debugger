@@ -19,6 +19,26 @@ function createClientError(code: string, message: string): Error {
   return error;
 }
 
+function readResponseErrorMessage(
+  message: DapResponseMessage,
+  command: string,
+): string {
+  if (message.message) {
+    return message.message;
+  }
+
+  const body = message.body as { error?: { format?: string; message?: string } } | undefined;
+  if (body?.error?.format) {
+    return body.error.format;
+  }
+
+  if (body?.error?.message) {
+    return body.error.message;
+  }
+
+  return `DAP request failed for ${command}`;
+}
+
 export type DapClient = {
   request<T = unknown>(
     command: string,
@@ -58,7 +78,7 @@ export function createDapClient(transport: DapTransport): DapClient {
         request.reject(
           createClientError(
             "dap.request_failed",
-            message.message ?? `DAP request failed for ${request.command}`,
+            readResponseErrorMessage(message, request.command),
           ),
         );
         return;

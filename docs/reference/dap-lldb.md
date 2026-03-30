@@ -1,7 +1,7 @@
 # LLDB DAP Contract
 
-This slice models `lldb-dap` as an already-running DAP endpoint.
-It does not spawn the adapter process yet. The goal is to keep the AI-first surface stable while the transport stays injectable and testable.
+This slice started as a contract-first facade over an injected `lldb-dap` endpoint.
+It now also has a live stdio launcher in [`src/adapters/dap-lldb/live.ts`](/Users/thiagobutignon/dev/nooa-debugger/src/adapters/dap-lldb/live.ts) for local/native dogfooding while keeping the facade transport-injectable and testable.
 
 ## Command Mapping
 
@@ -29,7 +29,8 @@ Notes:
 - `program` is the executable or entry script.
 - `args` are forwarded unchanged.
 - `stopOnEntry` maps to DAP launch behavior, not to a local shell wrapper.
-- This slice assumes the DAP server is already available.
+- The live launcher starts `/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap` over stdio by default.
+- The current client deliberately does not advertise `runInTerminal`; launch stays inside the adapter process.
 
 ### `attach`
 
@@ -101,6 +102,7 @@ The result is returned as a normalized string plus optional type metadata.
 - Native targets use the same mapping and are the least surprising path for this contract.
 - This facade intentionally avoids inventing language-specific parsing. The DAP server stays authoritative for source paths, frame names, and variable payloads.
 - The slice does not assume step-back, reverse execution, or other advanced debugger behavior.
+- Live launch and attach were verified locally outside the sandbox; sandboxed attach on macOS can fail with adapter errors such as `no such process`.
 
 ## AI-First JSON Shape
 
@@ -111,5 +113,4 @@ The facade returns normalized JSON that keeps the control flow obvious to agents
 - `state` returns either cached paused state or a running summary.
 - `stack`, `vars`, and `eval` are read operations over the paused snapshot.
 
-This keeps the LLDB-family slice contract-first while leaving room to bind a real `lldb-dap` transport later.
-
+This keeps the LLDB-family slice AI-first while the real `lldb-dap` transport stays isolated behind the same facade.

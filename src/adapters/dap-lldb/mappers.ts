@@ -89,7 +89,7 @@ export function buildInitializeArguments(): Record<string, unknown> {
     columnsStartAt1: true,
     linesStartAt1: true,
     pathFormat: "path",
-    supportsRunInTerminalRequest: true,
+    supportsRunInTerminalRequest: false,
     supportsVariablePaging: true,
     supportsVariableType: true,
   };
@@ -124,7 +124,8 @@ export function describeCapabilities(capabilities: DapCapabilities = {}): LldbSe
       "Swift frames and locals are mapped through DAP stackTrace, scopes, and variables without extra translation.",
       "Rust targets are supported as long as the build carries usable debug info; optimized locals may be missing or synthetic.",
       "Native targets inherit the same DAP mapping and typically expose source paths, stack frames, and locals directly.",
-      "This slice assumes an already-running lldb-dap endpoint; it does not spawn the adapter process.",
+      "The client does not advertise runInTerminal support; launch and attach stay inside the adapter process.",
+      "The base facade stays transport-injected; the live stdio launcher is layered separately.",
     ],
   };
 }
@@ -163,4 +164,3 @@ export function normalizeVariable(variable: {
     variablesReference: Number(variable.variablesReference ?? 0),
   };
 }
-

@@ -31,6 +31,12 @@ Agent-first debugger kernel for Bun-first runtime investigation.
 
 The current Bun slice is reliable for agent-first pause, breakpoint, and `--brk` flows over a live bridge. The remaining Bun-specific gap is narrower now: top-level-await continuation still needs deeper reverse-engineering.
 
+## DAP Status
+
+- LLDB/native: a real `lldb-dap` stdio session launcher now exists under `src/adapters/dap-lldb/live.ts`. Contract tests run in the default suite, and an opt-in live integration test (`NOOA_RUN_LLDB_LIVE=1`) was dogfooded successfully outside the sandbox with `launch -> pause -> vars -> eval`.
+- Node/JS/TS: the local `ms-vscode.js-debug-nightly` extension was assessed and is not a clean standalone DAP daemon. The repo now has shared DAP stdio/process plumbing ready for a real adapter once we choose one.
+- JVM: the contract-first backend remains in place, but this machine does not currently have a usable JVM runtime/debug adapter combination for real integration without adding tooling.
+
 ## Homunculus Plugin
 
 This repo now vendors a local Claude Code plugin snapshot under `plugins/homunculus/` and exposes a matching marketplace manifest at `.claude-plugin/marketplace.json`.

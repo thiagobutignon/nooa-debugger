@@ -126,7 +126,8 @@ const BACKEND_CATALOG: BackendDescriptor[] = [
     },
     notes: [
       "Contract-first LLDB facade is implemented over an injected DAP transport.",
-      "Real lldb-dap process launch and shared CLI wiring are still follow-up work.",
+      "A real lldb-dap stdio session launcher is implemented for local/native dogfooding.",
+      "Shared CLI wiring and default live verification still depend on running outside the sandbox.",
     ],
   },
   {

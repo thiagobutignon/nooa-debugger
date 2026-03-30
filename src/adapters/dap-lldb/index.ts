@@ -1,4 +1,5 @@
 export { createLldbFacade } from "./facade";
+export { startLldbDapSession } from "./live";
 export type {
   LldbAttachInput,
   LldbEvalResult,

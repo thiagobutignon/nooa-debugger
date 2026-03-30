@@ -159,3 +159,36 @@ test("dap client exposes event listeners and high-level helpers", async () => {
   removeListener();
   await client.dispose();
 });
+
+test("dap client preserves adapter failure details in request errors", async () => {
+  const memory = createMemoryTransport();
+  const client = createDapClient(memory.transport);
+
+  const attach = client.attach({ pid: 42 });
+  expect(memory.sent[0]).toEqual({
+    seq: 1,
+    type: "request",
+    command: "attach",
+    arguments: { pid: 42 },
+  });
+
+  memory.emit({
+    seq: 103,
+    type: "response",
+    request_seq: 1,
+    success: false,
+    command: "attach",
+    body: {
+      error: {
+        format: "attach requires a valid executable image or pid",
+      },
+    },
+  } satisfies DapResponseMessage);
+
+  await expect(attach).rejects.toMatchObject({
+    code: "dap.request_failed",
+    message: "attach requires a valid executable image or pid",
+  });
+
+  await client.dispose();
+});
