@@ -36,6 +36,6 @@ Use this skill when the task is to debug or inspect a program with `nooa-debugge
 ## Current supported runtimes
 
 - Bun
-- Node only when the current checkout or worktree explicitly marks it as verified
+- Node
 
 If a runtime is not listed in the capability note, treat it as unsupported until the repo explicitly says otherwise.

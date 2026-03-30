@@ -4,6 +4,7 @@ Use this note before relying on any runtime-specific debugger skill.
 
 ## Current rule
 
+- Verified runtimes in this checkout: Bun, Node.
 - If the repo README does not mark a runtime as verified, treat the runtime as unsupported.
 - Do not infer support from a design doc, a worktree, or a partial adapter.
 - If a runtime is unsupported, capture the smallest repro and stop.

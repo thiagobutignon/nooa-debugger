@@ -18,6 +18,7 @@ The CLI prints JSON on stdout. A failed command returns a JSON error object and 
 ```bash
 bun run index.ts debug launch -- bun run tests/fixtures/bun-idle.ts
 bun run index.ts debug launch --runtime node -- node tests/fixtures/node-idle.js
+bun run index.ts debug launch --runtime node --brk -- node tests/fixtures/node-breakpoint.js
 ```
 
 ### Inspect a session
@@ -63,7 +64,8 @@ The CLI persists state under `.nooa-debugger/` in the current working directory.
 ## Runtime Notes
 
 - Bun is the primary runtime slice and has the most complete live debugging support in this repo.
-- Node/JS/TS support is being added behind the same AI-first surface.
+- Node is now verified on the same AI-first surface for `launch`, `pause`, `break`, `continue`, `state`, `stack`, `vars`, `eval`, `status`, and `stop`.
+- For startup-sensitive Node investigations, prefer `debug launch --runtime node --brk -- ...` so the agent can set breakpoints before releasing execution.
 - The CLI is intentionally machine-readable first, so agents can compose it without a human-oriented TUI.
 
 ## Vendored Skills

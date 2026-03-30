@@ -5,7 +5,7 @@ description: Use when debugging Node targets with nooa-debugger; Inspector/CDP l
 
 # nooa-debugger-node
 
-Use this skill when the target runtime is Node and the Node adapter is available in the current checkout or worktree.
+Use this skill when the target runtime is Node in this repository.
 
 ## Use the Node control loop
 
@@ -18,15 +18,17 @@ Use this skill when the target runtime is Node and the Node adapter is available
 ## Node-specific rules
 
 - Enable `Runtime` and `Debugger` before relying on paused snapshots.
+- Treat the Node bridge as long-lived and the CLI as short-lived.
 - Keep `Debugger.paused` handling buffered so a pause can be observed before the agent reads it.
 - Resolve script ids with `Debugger.scriptParsed` so paused frames and breakpoints can be mapped back to file URLs.
 - Use `ws_url` when it exists; use `host:port` only as an attach hint that must be resolved first.
+- Prefer `debug launch --runtime node --brk -- ...` when the agent must set breakpoints before the target executes meaningful module code.
 
 ## Evaluation and breakpoints
 
 - `eval` must run in the current paused call frame.
 - `break` must normalize `file:line` into the inspector breakpoint request.
-- If the current checkout does not mark Node as verified, stop and consult the capability note instead of assuming the backend is live.
+- Node breakpoint requests must resolve to inspector file URLs rather than raw filesystem paths.
 
 ## What to capture
 
