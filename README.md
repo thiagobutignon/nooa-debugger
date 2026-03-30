@@ -1,44 +1,87 @@
 # NOOA Debugger
 
-Agent-first debugger kernel for Bun-first runtime investigation.
+Agent-first debugger kernel for CLI-driven investigation. The design goal is to give coding agents a stable, JSON-first control surface for launching, pausing, inspecting, continuing, and capturing debugger state across runtimes.
 
-## Current Slice
+## Quick Start
 
-- `debug launch`
-- `debug pause`
-- `debug break`
-- `debug continue`
-- `debug state`
-- `debug stack`
-- `debug vars`
-- `debug eval`
-- `debug status`
-- `debug stop`
-- `investigation create`
-- `investigation show`
-- `artifact list`
-- `artifact get`
+```bash
+bun install
+bun run index.ts debug backends
+```
 
-## Bun Status
+The CLI prints JSON on stdout. A failed command returns a JSON error object and a non-zero exit code.
 
-- Verified: robust Bun inspector launch, persisted `ws_url`, long-lived bridge process per session, real pause-on-demand via `Debugger.pause`, paused-snapshot persistence, and JSON contracts for `pause|state|stack|vars|eval`.
-- Verified: the CLI entrypoint is now truly short-lived in real dogfooding. `debug launch` exits cleanly while keeping both the Bun target and the bridge daemon alive via `detached + unref`.
-- Verified: `debug launch|status|stop` now surface daemon/bridge state in JSON (`running`, `pid`, `host`, `port`) so short-lived agent calls can reason about transport health explicitly.
-- Verified: `debug launch --brk` now releases Bun's waiting state correctly through `Inspector.initialized`, so a later `debug continue` can reach the real user breakpoint instead of getting stuck on startup pause.
-- Verified by tests: adapter/unit coverage for Bun launch, CDP transport, scriptId-to-url rehydration, session attach helpers, and CLI state/error handling.
-- Verified by dogfooding on Bun `1.3.10`: `debug launch -> debug pause -> debug state -> debug eval -> debug stop`, `debug break -> debug continue`, and `debug launch --brk -> debug break -> debug continue` all work end to end against a live Bun target.
-- Refined runtime limit on Bun `1.3.10`: future callback pauses work for both `Debugger.setBreakpointByUrl` and plain `debugger;`, but the inspector still does not emit a usable `Debugger.paused` event for module continuation after top-level `await`.
+## CLI Cheat Sheet
 
-The current Bun slice is reliable for agent-first pause, breakpoint, and `--brk` flows over a live bridge. The remaining Bun-specific gap is narrower now: top-level-await continuation still needs deeper reverse-engineering.
+### Launch a target
 
-## DAP Status
+```bash
+bun run index.ts debug launch -- bun run tests/fixtures/bun-idle.ts
+bun run index.ts debug launch --runtime node -- node tests/fixtures/node-idle.js
+```
 
-- LLDB/native: a real `lldb-dap` stdio session launcher now exists under `src/adapters/dap-lldb/live.ts`. Contract tests run in the default suite, and an opt-in live integration test (`NOOA_RUN_LLDB_LIVE=1`) was dogfooded successfully outside the sandbox with `launch -> pause -> vars -> eval`.
-- Node/JS/TS: the local `ms-vscode.js-debug-nightly` extension was assessed and is not a clean standalone DAP daemon. The repo now has shared DAP stdio/process plumbing ready for a real adapter once we choose one.
-- JVM: the contract-first backend remains in place, but this machine does not currently have a usable JVM runtime/debug adapter combination for real integration without adding tooling.
+### Inspect a session
 
-## Homunculus Plugin
+```bash
+bun run index.ts debug status <session_id>
+bun run index.ts debug state <session_id>
+bun run index.ts debug stack <session_id>
+bun run index.ts debug vars <session_id>
+bun run index.ts debug eval <session_id> "globalThis.__tracked"
+```
 
-This repo now vendors a local Claude Code plugin snapshot under `plugins/homunculus/` and exposes a matching marketplace manifest at `.claude-plugin/marketplace.json`.
+### Control execution
 
-Use the local checkout as the plugin source, then install `homunculus@homunculus` and run `/homunculus:init` in Claude Code. The vendored snapshot matches upstream `humanplane/homunculus` `2.0.0-alpha`.
+```bash
+bun run index.ts debug pause <session_id>
+bun run index.ts debug continue <session_id>
+bun run index.ts debug break <session_id> tests/fixtures/bun-idle.ts:3
+bun run index.ts debug stop <session_id>
+```
+
+### Investigation and artifacts
+
+```bash
+bun run index.ts investigation create
+bun run index.ts investigation show <investigation_id>
+bun run index.ts artifact list <investigation_id>
+bun run index.ts artifact get <artifact_id>
+```
+
+## Recommended Agent Flow
+
+1. Launch the target with `debug launch` and capture the returned `session_id`.
+2. Read `debug status` or `debug state` before taking action.
+3. Use `debug pause`, `debug break`, `debug continue`, `debug stack`, `debug vars`, and `debug eval` to collect evidence.
+4. Prefer short, repeatable JSON interactions over interactive debugging.
+5. Stop the session with `debug stop` once the investigation is complete.
+
+## Local Storage
+
+The CLI persists state under `.nooa-debugger/` in the current working directory. Session records, investigation timelines, and artifacts are stored there so separate CLI invocations can rehydrate the same debugging state.
+
+## Runtime Notes
+
+- Bun is the primary runtime slice and has the most complete live debugging support in this repo.
+- Node/JS/TS support is being added behind the same AI-first surface.
+- The CLI is intentionally machine-readable first, so agents can compose it without a human-oriented TUI.
+
+## Vendored Skills
+
+This repository vendors `obra/superpowers` in `.codex/superpowers`, with local discovery mirrored through `.agents/skills/superpowers`.
+
+Use the repo-local skills when you want agent workflow guidance without leaving the checkout. The shortest path is:
+
+- `using-superpowers` for general Codex workflow
+- `systematic-debugging` for failures, flaky behavior, and runtime issues
+- `subagent-driven-development` for parallel slices
+- `test-driven-development` for feature work
+- `requesting-code-review` and `receiving-code-review` for review loops
+
+For the install and discovery notes, see [`.codex/README.md`](.codex/README.md).
+
+## Debugger Skills
+
+This repo also vendors debugger-specific skills for `nooa-debugger` itself. They live under `.codex/superpowers/skills/` and are surfaced through the existing `.agents/skills/superpowers` symlink, which points at the vendored skill tree.
+
+Use the runtime-specific skill only when the repo marks that runtime as verified; otherwise follow the capability note in the main skill.
