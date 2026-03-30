@@ -4,6 +4,7 @@ import { launchBunTarget } from "../../adapters/bun/launch";
 import { createBridgeClient, startSessionBridge, type BridgeClient } from "../../bridge/client";
 import { jsonError, jsonSuccess, type JsonFailure, type JsonSuccess } from "../../core/errors";
 import { createArtifactStore } from "../../kernel/artifacts/store";
+import { getBackendCatalog } from "../../kernel/backends";
 import { createId } from "../../kernel/ids";
 import { createInvestigationStore } from "../../kernel/investigations/store";
 import { createSessionStore } from "../../kernel/sessions/store";
@@ -498,6 +499,12 @@ async function resolvePausedSnapshotRecord(
 export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess<unknown> | JsonFailure> {
   const action = args[1];
   const { sessions, investigations, artifacts } = stores(cwd);
+
+  if (action === "backends") {
+    return jsonSuccess({
+      backends: getBackendCatalog(),
+    });
+  }
 
   if (action === "launch") {
     const { command, breakOnStart } = parseLaunchArgs(args);
