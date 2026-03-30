@@ -7,6 +7,7 @@ import type {
   BridgeReadyFile,
   BridgeRequest,
   BridgeResponse,
+  BridgeStatusResult,
 } from "./types";
 
 function ok<T>(data: T): BridgeResponse<T> {
@@ -27,9 +28,23 @@ function isPauseTimeout(error: unknown): boolean {
   return error instanceof Error && error.message.includes("Timed out waiting for Debugger.paused");
 }
 
+function isProcessAlive(pid?: number): boolean {
+  if (!pid) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function startBridgeServer(options: {
   wsUrl: string;
   readyPath: string;
+  targetPid?: number;
 }): Promise<void> {
   const live = await createBunSession(options.wsUrl);
   const bridgeToken = crypto.randomUUID();
@@ -41,6 +56,32 @@ export async function startBridgeServer(options: {
   async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
     switch (request.action) {
       case "ping":
+        if (!closing) {
+          await live.ping();
+        }
+        return ok(undefined);
+
+      case "status": {
+        const targetAlive = isProcessAlive(options.targetPid);
+        const healthy = targetAlive && !closing
+          ? await live.ping().then(
+            () => true,
+            () => false,
+          )
+          : false;
+        const state: BridgeStatusResult["state"] =
+          closing ? "closed" : currentState;
+
+        return ok<BridgeStatusResult>({
+          healthy,
+          target_alive: targetAlive,
+          state,
+          snapshot: state === "paused" ? currentSnapshot : undefined,
+        });
+      }
+
+      case "release_waiting_for_debugger":
+        await live.releaseWaitingForDebugger();
         return ok(undefined);
 
       case "pause": {

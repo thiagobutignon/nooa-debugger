@@ -1,0 +1,15 @@
+{
+  "name": "homunculus",
+  "owner": {
+    "name": "Nikshep Saravanna",
+    "url": "https://github.com/humanplane"
+  },
+  "plugins": [
+    {
+      "name": "homunculus",
+      "source": "./plugins/homunculus",
+      "description": "A Claude Code plugin that's alive. Birth it, bond to it, build with it. It watches you work, learns your patterns, and grows.",
+      "version": "2.0.0-alpha"
+    }
+  ]
+}

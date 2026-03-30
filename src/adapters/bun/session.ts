@@ -73,6 +73,8 @@ export type BunSession = {
     breakpointId?: string;
     locations: BunBreakpointLocation[];
   }>;
+  ping(): Promise<void>;
+  releaseWaitingForDebugger(): Promise<void>;
   pause(timeoutMs?: number): Promise<BunPausedSnapshot>;
   continueUntilPaused(timeoutMs?: number): Promise<BunPausedSnapshot>;
   snapshotPaused(timeoutMs?: number): Promise<BunPausedSnapshot>;
@@ -213,6 +215,14 @@ export async function createBunSession(wsUrl: string): Promise<BunSession> {
   await client.send("Debugger.setPauseOnDebuggerStatements", { enabled: true }).catch(() => {});
 
   return {
+    async ping() {
+      await client.send("Debugger.setBreakpointsActive", { active: true });
+    },
+
+    async releaseWaitingForDebugger() {
+      await client.send("Inspector.initialized").catch(() => {});
+    },
+
     async setBreakpoint(fileLine: string) {
       const { filePath, line } = parseFileLine(fileLine);
       const response = (await client.send("Debugger.setBreakpointByUrl", {

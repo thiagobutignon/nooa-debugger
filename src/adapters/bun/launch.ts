@@ -80,6 +80,7 @@ export async function launchBunTarget(
   const withInspect = injectInspectFlag(command, options);
 
   const proc = Bun.spawn(withInspect, {
+    detached: true,
     stdout: "ignore",
     stderr: "pipe",
     stdin: "ignore",
@@ -95,6 +96,8 @@ export async function launchBunTarget(
       stderr_text.trim() || "runtime.attach_failed: inspector url not detected",
     );
   }
+
+  proc.unref();
 
   return {
     pid: proc.pid,

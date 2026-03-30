@@ -65,10 +65,54 @@ async function resolveDaemonStatus(session: SessionRecord): Promise<DebugDaemonS
   }
 
   try {
-    await createBridgeClient(bridge).ping();
-    return daemonStatusFromBridge(bridge, true);
+    const status = await createBridgeClient(bridge).status();
+    return daemonStatusFromBridge(bridge, status.healthy);
   } catch {
     return daemonStatusFromBridge(bridge, false);
+  }
+}
+
+async function rehydratePausedSnapshotFromBridge(
+  sessions: ReturnType<typeof createSessionStore>,
+  session: SessionRecord,
+): Promise<SessionRecord> {
+  if (session.state !== "paused" || session.paused_snapshot || !session.transport_hint?.bridge) {
+    return session;
+  }
+
+  try {
+    const status = await createBridgeClient(session.transport_hint.bridge).status();
+    if (!status.target_alive) {
+      return markExited(sessions, session, "target_exited");
+    }
+
+    if (status.state === "paused" && status.snapshot) {
+      return sessions.put({
+        ...session,
+        state: "paused",
+        paused_snapshot: toPausedSnapshotRecord(status.snapshot, session.target_pid),
+        last_known_state: {
+          reason: "paused_rehydrated_from_bridge",
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    if (status.state === "running") {
+      return sessions.put({
+        ...session,
+        state: "running",
+        paused_snapshot: undefined,
+        last_known_state: {
+          reason: "bridge_reports_running",
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    return session;
+  } catch {
+    return session;
   }
 }
 
@@ -173,6 +217,22 @@ function stringifyRuntimeValue(value: {
     default:
       return value.description ?? JSON.stringify(value.value);
   }
+}
+
+function isWaitingForDebuggerStartupPause(
+  session: SessionRecord,
+  snapshot: BunPausedSnapshot,
+): boolean {
+  if (snapshot.reason === "Break on start") {
+    return true;
+  }
+
+  const targetFile = normalizeFilePath(session.root_command.at(-1) ?? "");
+  const pausedFile = normalizeFilePath(snapshot.topFrame.location.file ?? "");
+
+  return Boolean(targetFile)
+    && pausedFile === targetFile
+    && snapshot.topFrame.location.line <= 1;
 }
 
 function toPausedSnapshotRecord(
@@ -330,7 +390,27 @@ async function connectLiveSession(
     const live = createBridgeClient(bridgeHint);
 
     try {
-      await live.ping();
+      const status = await live.status();
+      if (!status.target_alive) {
+        const exited = await markExited(sessions, session, "target_exited");
+        return {
+          session: exited,
+          error: sessionFailure("runtime.target_exited", "Debug target has exited", exited),
+        };
+      }
+
+      if (!status.healthy) {
+        const lost = await markTransportLost(sessions, session, "bridge_unhealthy");
+        return {
+          session: lost,
+          error: sessionFailure(
+            "session.transport_lost",
+            "Debug bridge is reachable but its live transport is unhealthy",
+            lost,
+            true,
+          ),
+        };
+      }
       return {
         session,
         live,
@@ -391,6 +471,28 @@ function ensurePausedSnapshot(session: SessionRecord): PausedSnapshotRecord | Js
   }
 
   return session.paused_snapshot;
+}
+
+async function resolvePausedSnapshotRecord(
+  sessions: ReturnType<typeof createSessionStore>,
+  session: SessionRecord,
+): Promise<
+  | { session: SessionRecord; pausedSnapshot: PausedSnapshotRecord }
+  | { session: SessionRecord; error: JsonFailure }
+> {
+  const refreshed = await rehydratePausedSnapshotFromBridge(sessions, session);
+  const pausedSnapshotOrError = ensurePausedSnapshot(refreshed);
+  if ("ok" in pausedSnapshotOrError) {
+    return {
+      session: refreshed,
+      error: pausedSnapshotOrError,
+    };
+  }
+
+  return {
+    session: refreshed,
+    pausedSnapshot: pausedSnapshotOrError,
+  };
 }
 
 export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess<unknown> | JsonFailure> {
@@ -499,10 +601,11 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     const sessionOrError = await resolveSession(sessions, args[2]);
     if ("ok" in sessionOrError) return sessionOrError;
 
-    const updated =
+    let updated =
       sessionOrError.state === "exited" || isProcessAlive(sessionOrError.root_pid)
         ? sessionOrError
         : await markExited(sessions, sessionOrError, "status_refresh");
+    updated = await rehydratePausedSnapshotFromBridge(sessions, updated);
     const daemon = await resolveDaemonStatus(updated);
 
     return jsonSuccess({
@@ -706,19 +809,21 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     const sessionOrError = await resolveSession(sessions, args[2]);
     if ("ok" in sessionOrError) return sessionOrError;
 
-    const pausedSnapshotOrError = ensurePausedSnapshot(sessionOrError);
-    if ("ok" in pausedSnapshotOrError) return pausedSnapshotOrError;
+    const pausedOrError = await resolvePausedSnapshotRecord(sessions, sessionOrError);
+    if ("error" in pausedOrError) return pausedOrError.error;
+    const session = pausedOrError.session;
+    const pausedSnapshot = pausedOrError.pausedSnapshot;
 
     return jsonSuccess({
-      session_id: sessionOrError.session_id,
-      investigation_id: sessionOrError.current_investigation_id,
-      runtime: sessionOrError.runtime,
-      state: sessionOrError.state,
-      paused_ref: pausedSnapshotOrError.paused_ref,
-      location: pausedSnapshotOrError.location,
-      reason: pausedSnapshotOrError.reason,
-      hit_breakpoints: pausedSnapshotOrError.hit_breakpoints ?? [],
-      frame_refs: pausedSnapshotOrError.frames.map((frame) => frame.frame_ref),
+      session_id: session.session_id,
+      investigation_id: session.current_investigation_id,
+      runtime: session.runtime,
+      state: session.state,
+      paused_ref: pausedSnapshot.paused_ref,
+      location: pausedSnapshot.location,
+      reason: pausedSnapshot.reason,
+      hit_breakpoints: pausedSnapshot.hit_breakpoints ?? [],
+      frame_refs: pausedSnapshot.frames.map((frame) => frame.frame_ref),
     });
   }
 
@@ -726,16 +831,18 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     const sessionOrError = await resolveSession(sessions, args[2]);
     if ("ok" in sessionOrError) return sessionOrError;
 
-    const pausedSnapshotOrError = ensurePausedSnapshot(sessionOrError);
-    if ("ok" in pausedSnapshotOrError) return pausedSnapshotOrError;
+    const pausedOrError = await resolvePausedSnapshotRecord(sessions, sessionOrError);
+    if ("error" in pausedOrError) return pausedOrError.error;
+    const session = pausedOrError.session;
+    const pausedSnapshot = pausedOrError.pausedSnapshot;
 
     return jsonSuccess({
-      session_id: sessionOrError.session_id,
-      investigation_id: sessionOrError.current_investigation_id,
-      runtime: sessionOrError.runtime,
-      state: sessionOrError.state,
-      paused_ref: pausedSnapshotOrError.paused_ref,
-      frames: pausedSnapshotOrError.frames.map((frame) => ({
+      session_id: session.session_id,
+      investigation_id: session.current_investigation_id,
+      runtime: session.runtime,
+      state: session.state,
+      paused_ref: pausedSnapshot.paused_ref,
+      frames: pausedSnapshot.frames.map((frame) => ({
         frame_ref: frame.frame_ref,
         function: frame.function_name,
         location: frame.location,
@@ -747,11 +854,13 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
     const sessionOrError = await resolveSession(sessions, args[2]);
     if ("ok" in sessionOrError) return sessionOrError;
 
-    const pausedSnapshotOrError = ensurePausedSnapshot(sessionOrError);
-    if ("ok" in pausedSnapshotOrError) return pausedSnapshotOrError;
+    const pausedOrError = await resolvePausedSnapshotRecord(sessions, sessionOrError);
+    if ("error" in pausedOrError) return pausedOrError.error;
+    const session = pausedOrError.session;
+    const pausedSnapshot = pausedOrError.pausedSnapshot;
 
-    const frameRef = pausedSnapshotOrError.frames[0]?.frame_ref ?? "@f0";
-    const locals = pausedSnapshotOrError.locals
+    const frameRef = pausedSnapshot.frames[0]?.frame_ref ?? "@f0";
+    const locals = pausedSnapshot.locals
       .filter((local) => local.frame_ref === frameRef)
       .map((local) => ({
         name: local.name,
@@ -760,11 +869,11 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       }));
 
     return jsonSuccess({
-      session_id: sessionOrError.session_id,
-      investigation_id: sessionOrError.current_investigation_id,
-      runtime: sessionOrError.runtime,
-      state: sessionOrError.state,
-      paused_ref: pausedSnapshotOrError.paused_ref,
+      session_id: session.session_id,
+      investigation_id: session.current_investigation_id,
+      runtime: session.runtime,
+      state: session.state,
+      paused_ref: pausedSnapshot.paused_ref,
       frame_ref: frameRef,
       locals,
     });
@@ -783,10 +892,10 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       });
     }
 
-    const pausedSnapshotOrError = ensurePausedSnapshot(sessionOrError);
-    if ("ok" in pausedSnapshotOrError) return pausedSnapshotOrError;
+    const pausedOrError = await resolvePausedSnapshotRecord(sessions, sessionOrError);
+    if ("error" in pausedOrError) return pausedOrError.error;
 
-    const liveOrError = await connectLiveSession(sessions, sessionOrError);
+    const liveOrError = await connectLiveSession(sessions, pausedOrError.session);
     if ("error" in liveOrError) {
       return liveOrError.error;
     }
@@ -878,6 +987,11 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
       if (!session.transport_hint?.bridge) {
         session = await reapplyPersistedBreakpoints(sessions, session, live);
       }
+
+      if (waitingForDebugger) {
+        await live.releaseWaitingForDebugger();
+      }
+
       let paused: BunPausedSnapshot;
 
       if (session.state === "paused") {
@@ -900,6 +1014,9 @@ export async function runDebug(args: string[], cwd: string): Promise<JsonSuccess
         paused = await live.continueUntilPaused(2_000);
       } else {
         paused = await live.snapshotPaused(2_000);
+        if (waitingForDebugger && isWaitingForDebuggerStartupPause(session, paused)) {
+          paused = await live.continueUntilPaused(2_000);
+        }
       }
 
       session = await sessions.put({

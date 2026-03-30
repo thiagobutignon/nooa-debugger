@@ -10,6 +10,7 @@ import type {
   BridgeReadyFile,
   BridgeRequest,
   BridgeResponse,
+  BridgeStatusResult,
 } from "./types";
 
 function bridgeError(code: string, message: string): Error {
@@ -141,6 +142,7 @@ export async function startSessionBridge(options: {
       readyPath,
     ],
     {
+      detached: true,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -158,6 +160,8 @@ export async function startSessionBridge(options: {
       }),
     ]);
 
+    child.unref();
+
     return {
       host: ready.host,
       port: ready.port,
@@ -174,6 +178,14 @@ export function createBridgeClient(transport: SessionBridgeHint) {
   return {
     ping() {
       return sendBridgeRequest<void>(transport, { action: "ping" });
+    },
+
+    status() {
+      return sendBridgeRequest<BridgeStatusResult>(transport, { action: "status" });
+    },
+
+    releaseWaitingForDebugger() {
+      return sendBridgeRequest<void>(transport, { action: "release_waiting_for_debugger" });
     },
 
     pause(timeoutMs = 2_000) {

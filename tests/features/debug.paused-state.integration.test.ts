@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { main } from "../../index";
 
 const fixturePath = join(import.meta.dir, "..", "fixtures", "bun-debugger-statement.js");
+const callbackFixturePath = join(import.meta.dir, "..", "fixtures", "bun-debugger-timeout.js");
 const sessionIdsToStop: Array<{ cwd: string; sessionId: string }> = [];
 
 async function runCommand(args: string[], cwd: string) {
@@ -24,8 +25,39 @@ afterEach(async () => {
   sessionIdsToStop.length = 0;
 });
 
-// Bun 1.3.10 currently does not emit a usable Debugger.paused event for this
-// flow in local dogfooding, even with a bridge kept alive from debug launch.
+test("debugger can wait for a Bun debugger statement in a future callback", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "nooa-debugger-paused-callback-"));
+
+  const launch = await runCommand(
+    ["debug", "launch", "--", "bun", "run", callbackFixturePath],
+    cwd,
+  );
+  expect(launch.ok).toBe(true);
+  sessionIdsToStop.push({ cwd, sessionId: launch.data.session_id });
+
+  const resumed = await runCommand(
+    ["debug", "continue", launch.data.session_id],
+    cwd,
+  );
+  expect(resumed.ok).toBe(true);
+  expect(resumed.data.state).toBe("paused");
+
+  const state = await runCommand(["debug", "state", launch.data.session_id], cwd);
+  expect(state.ok).toBe(true);
+  expect(state.data.location.file).toContain("bun-debugger-timeout.js");
+  expect(state.data.location.line).toBe(3);
+
+  const evalResult = await runCommand(
+    ["debug", "eval", launch.data.session_id, "tracked + 1"],
+    cwd,
+  );
+  expect(evalResult.ok).toBe(true);
+  expect(evalResult.data.result.value).toBe("42");
+});
+
+// Bun 1.3.10 currently does not emit a usable Debugger.paused event for a
+// top-level ESM continuation after top-level await, even when the debugger
+// transport stays live from debug launch.
 test.skip("debugger can wait for a Bun debugger statement and inspect runtime state", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "nooa-debugger-paused-state-"));
 

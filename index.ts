@@ -41,4 +41,5 @@ export async function main(
 
 if (import.meta.path === Bun.main) {
   await main();
+  process.exit(process.exitCode ?? 0);
 }

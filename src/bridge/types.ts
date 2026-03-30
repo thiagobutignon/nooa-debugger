@@ -7,6 +7,8 @@ export type BridgeReadyFile = SessionBridgeHint & {
 
 export type BridgeRequest =
   | { token: string; action: "ping" }
+  | { token: string; action: "status" }
+  | { token: string; action: "release_waiting_for_debugger" }
   | { token: string; action: "pause"; timeout_ms?: number }
   | { token: string; action: "wait_for_pause"; timeout_ms?: number }
   | { token: string; action: "resume_and_wait"; timeout_ms?: number }
@@ -33,6 +35,13 @@ export type BridgePauseResult =
   | { state: "running" }
   | { state: "paused"; snapshot: BunPausedSnapshot };
 
+export type BridgeStatusResult = {
+  healthy: boolean;
+  target_alive: boolean;
+  state: "running" | "paused" | "closed";
+  snapshot?: BunPausedSnapshot;
+};
+
 export type BridgeBreakpointResult = {
   breakpointId?: string;
   locations: BunBreakpointLocation[];
@@ -41,4 +50,3 @@ export type BridgeBreakpointResult = {
 export type BridgeEvaluationResult = {
   result: any;
 };
-

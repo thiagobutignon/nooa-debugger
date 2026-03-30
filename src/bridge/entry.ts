@@ -21,6 +21,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 const args = parseArgs(Bun.argv.slice(2));
 const wsUrl = args["ws-url"];
 const readyPath = args["ready-path"];
+const targetPid = Number(args["target-pid"] ?? 0);
 
 if (!wsUrl || !readyPath) {
   process.exit(1);
@@ -30,6 +31,7 @@ try {
   await startBridgeServer({
     wsUrl,
     readyPath,
+    targetPid: Number.isFinite(targetPid) && targetPid > 0 ? targetPid : undefined,
   });
 } catch (error) {
   await writeJsonAtomically(readyPath, {
@@ -41,4 +43,3 @@ try {
   });
   process.exit(1);
 }
-
